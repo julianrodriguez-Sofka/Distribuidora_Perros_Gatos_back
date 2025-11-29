@@ -132,7 +132,7 @@ async def create_user_order(
         
         # Get shipping cost and payment method from payload
         costo_envio = float(payload.get("costoEnvio") or payload.get("costo_envio") or 0.0)
-        metodo_pago = payload.get("metodoPago") or payload.get("metodo_pago") or "No especificado"
+        metodo_pago = payload.get("metodoPago") or payload.get("metodo_pago") or "Efectivo"
         
         # Calculate total
         total = subtotal + costo_envio

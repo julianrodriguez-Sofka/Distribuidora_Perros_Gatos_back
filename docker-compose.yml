@@ -121,7 +121,7 @@ services:
       fi;
       if [ -d /sql/migrations ]; then
         echo 'Applying migrations...';
-        for f in /sql/migrations/*.sql; do [ -f \"$$f\" ] && /opt/mssql-tools/bin/sqlcmd -S sqlserver -U SA -P 'yourStrongPassword123#' -d distribuidora_db -i \"$$f\"; done;
+        for f in /sql/migrations/*.sql; do [ -f \"$$f\" ] && echo \"Applying $$f\" && /opt/mssql-tools/bin/sqlcmd -S sqlserver -U SA -P 'yourStrongPassword123#' -d distribuidora_db -i \"$$f\" || echo \"Migration $$f failed or already applied\"; done;
       fi;
       if [ -d /sql/seeders ]; then
         echo 'Applying seeders...';

@@ -283,11 +283,30 @@ class PedidoResponse(BaseModel):
     usuario_id: int
     estado: str
     total: float
-    fecha_creacion: datetime
+    subtotal: Optional[float] = None
+    costo_envio: Optional[float] = None
+    metodo_pago: Optional[str] = None
+    direccion_entrega: Optional[str] = None
+    direccionEnvio: Optional[str] = None  # Alias for frontend compatibility
+    telefono_contacto: Optional[str] = None
+    nota_especial: Optional[str] = None
+    fecha_creacion: Optional[datetime] = None
+    fecha: Optional[datetime] = None  # Alias for frontend compatibility
+    created_at: Optional[datetime] = None  # Another alias
     items: List[PedidoItemResponse] = []
+    # Client information
+    clienteId: Optional[int] = None
+    cliente_id: Optional[int] = None
+    clienteNombre: Optional[str] = None
+    cliente_nombre: Optional[str] = None
+    clienteEmail: Optional[str] = None
+    cliente_email: Optional[str] = None
+    clienteTelefono: Optional[str] = None
+    cliente_telefono: Optional[str] = None
     
     class Config:
         from_attributes = True
+        populate_by_name = True  # Allow both field names and aliases
 
 
 # Carousel Schemas
