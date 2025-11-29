@@ -104,6 +104,7 @@ services:
   db-migrator:
     image: mcr.microsoft.com/mssql-tools # This image contains sqlcmd
     container_name: distribuidora-db-migrator
+    restart: "no"
     volumes:
       - ./sql:/docker-entrypoint-initdb.d # Mount the entire sql directory
     command: /bin/bash /docker-entrypoint-initdb.d/init-db.sh

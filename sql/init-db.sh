@@ -6,9 +6,9 @@ set -x # Muestra cada comando ejecutado
 DB_SERVER="sqlserver"
 DB_USER="SA"
 DB_PASSWORD="yourStrongPassword123#" # Debe coincidir con docker-compose.yml
-DB_NAME="distribuidora_db" # Añadimos el nombre de la base de datos para futuras referencias
+DB_NAME="distribuidora_db" # AÃ±adimos el nombre de la base de datos para futuras referencias
 
-# Esperar a que SQL Server esté listo
+# Esperar a que SQL Server estÃ© listo
 echo "Waiting for SQL Server to be ready..."
 
 # Mantenemos los reintentos a 30 (150 segundos) para manejar el arranque lento de SQL Server.
@@ -21,10 +21,10 @@ do
     ATTEMPT=$((ATTEMPT + 1))
 
     if [ "$ATTEMPT" -ge "$MAX_RETRIES" ]; then
-        echo "--- ERROR FATAL DE CONEXIÓN ---"
+        echo "--- ERROR FATAL DE CONEXIÃ“N ---"
         cat connection_error.log || true
-        echo "El servidor SQL no respondió después de $MAX_RETRIES intentos. La inicialización ha fallado por timeout."
-        echo "VERIFIQUE: 1. Los límites de memoria/CPU en docker-compose. 2. Los logs del contenedor 'sqlserver' para ver si está en recuperación."
+        echo "El servidor SQL no respondiÃ³ despuÃ©s de $MAX_RETRIES intentos. La inicializaciÃ³n ha fallado por timeout."
+        echo "VERIFIQUE: 1. Los lÃ­mites de memoria/CPU en docker-compose. 2. Los logs del contenedor 'sqlserver' para ver si estÃ¡ en recuperaciÃ³n."
         exit 1
     fi
 
