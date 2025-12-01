@@ -3,6 +3,7 @@ FastAPI main entry point
 Distribuidora Perros y Gatos Backend
 """
 import os
+import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -14,6 +15,14 @@ from fastapi.staticfiles import StaticFiles
 from app.config import settings
 from app.database import init_db, close_db
 from app.middleware.error_handler import setup_error_handlers
+from app.utils.rabbitmq import rabbitmq_producer
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO if settings.DEBUG else logging.WARNING,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 from app.routers import (
     auth_router,
     categories_router,
@@ -24,6 +33,7 @@ from app.routers import (
     admin_users_router,
     home_products_router
 )
+from app.routers import public_orders
 
 
 @asynccontextmanager
@@ -33,24 +43,31 @@ async def lifespan(app: FastAPI):
     Handles database initialization and cleanup
     """
     # Startup
-    print("Starting Distribuidora Perros y Gatos Backend API")
+    logger.info("Starting Distribuidora Perros y Gatos Backend API")
     try:
         init_db()
-        print("Database initialized successfully")
+        logger.info("Database initialized successfully")
     except Exception as e:
-        print(f"Warning: Could not initialize database: {str(e)}")
-        print("Application will continue without database connection")
+        logger.warning(f"Could not initialize database: {str(e)}")
+        logger.warning("Application will continue without database connection")
         # Don't raise - allow app to start for development
     
     yield
     
     # Shutdown
-    print("Shutting down API")
+    logger.info("Shutting down API")
     try:
         close_db()
-        print("Database connections closed")
+        logger.info("Database connections closed")
     except Exception as e:
-        print(f"Error closing database: {str(e)}")
+        logger.error(f"Error closing database: {str(e)}")
+    
+    # Close RabbitMQ connection
+    try:
+        rabbitmq_producer.close()
+        logger.info("RabbitMQ connection closed")
+    except Exception as e:
+        logger.error(f"Error closing RabbitMQ connection: {str(e)}")
 
 
 # Crear aplicación FastAPI
@@ -122,6 +139,8 @@ app.include_router(carousel_router, tags=["carousel"])
 app.include_router(orders_router, tags=["orders"])
 app.include_router(admin_users_router, tags=["admin-users"])
 app.include_router(home_products_router, tags=["home-products"])
+# Public orders router for authenticated users
+app.include_router(public_orders.router, tags=["public-orders"])
 
 # Public carousel router (frontend)
 from app.routers.carousel import public_router as carousel_public_router

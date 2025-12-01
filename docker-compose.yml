@@ -24,6 +24,7 @@ services:
       - RABBITMQ_PORT=5672
       - RABBITMQ_USER=guest
       - RABBITMQ_PASSWORD=guest
+      - DEBUG=True
     networks:
       - distribuidora-network
     volumes:
@@ -106,8 +107,29 @@ services:
     container_name: distribuidora-db-migrator
     restart: "no"
     volumes:
-      - ./sql:/docker-entrypoint-initdb.d # Mount the entire sql directory
-    command: /bin/bash /docker-entrypoint-initdb.d/init-db.sh
+      - ./sql:/sql # Mount the entire sql directory
+    command: >
+      sh -c "
+      echo 'Waiting for SQL Server...';
+      for i in $$(seq 1 30); do
+        /opt/mssql-tools/bin/sqlcmd -S sqlserver -U SA -P 'yourStrongPassword123#' -Q 'SELECT 1' > /dev/null 2>&1 && break || sleep 5;
+      done;
+      echo 'Creating database if not exists...';
+      /opt/mssql-tools/bin/sqlcmd -S sqlserver -U SA -P 'yourStrongPassword123#' -d master -Q \"IF NOT EXISTS(SELECT * FROM sys.databases WHERE name = 'distribuidora_db') CREATE DATABASE [distribuidora_db];\";
+      if [ -f /sql/schema.sql ]; then
+        echo 'Applying schema...';
+        /opt/mssql-tools/bin/sqlcmd -S sqlserver -U SA -P 'yourStrongPassword123#' -d distribuidora_db -i /sql/schema.sql;
+      fi;
+      if [ -d /sql/migrations ]; then
+        echo 'Applying migrations...';
+        for f in /sql/migrations/*.sql; do [ -f \"$$f\" ] && echo \"Applying $$f\" && /opt/mssql-tools/bin/sqlcmd -S sqlserver -U SA -P 'yourStrongPassword123#' -d distribuidora_db -i \"$$f\" || echo \"Migration $$f failed or already applied\"; done;
+      fi;
+      if [ -d /sql/seeders ]; then
+        echo 'Applying seeders...';
+        for f in /sql/seeders/*.sql; do [ -f \"$$f\" ] && /opt/mssql-tools/bin/sqlcmd -S sqlserver -U SA -P 'yourStrongPassword123#' -d distribuidora_db -i \"$$f\"; done;
+      fi;
+      echo 'Database initialization complete.';
+      "
     depends_on:
       sqlserver:
         condition: service_healthy

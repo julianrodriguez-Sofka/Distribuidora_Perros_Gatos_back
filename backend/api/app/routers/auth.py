@@ -26,7 +26,7 @@ from app.schemas import (
 from app.database import get_db
 from app.models import Usuario, VerificationCode, RefreshToken
 from app.utils import security_utils
-from app.utils.rabbitmq import rabbitmq_producer
+from app.utils.rabbitmq import publish_message_safe
 from app.config import settings
 
 logger = logging.getLogger(__name__)
@@ -124,6 +124,14 @@ async def register(request: RegisterRequest, db: Session = Depends(get_db)):
         verification_code = security_utils.generate_verification_code()
         code_hash = security_utils.hash_verification_code(verification_code)
         
+        # Log verification code in development mode for testing
+        # Always log for now to help with debugging
+        logger.info(f"[DEV MODE] Verification code for {request.email}: {verification_code}")
+        logger.info(f"[DEV MODE] User can verify email at: POST /api/auth/verify-email with code: {verification_code}")
+        if settings.DEBUG:
+            logger.info(f"🔐 [DEV MODE] Verification code for {request.email}: {verification_code}")
+            logger.info(f"📧 [DEV MODE] User can verify email at: POST /api/auth/verify-email with code: {verification_code}")
+        
         # 7. Create/update VerificationCodes with expires_at = now + 10 minutes
         expires_at = datetime.now(timezone.utc) + timedelta(minutes=settings.VERIFICATION_CODE_EXPIRE_MINUTES)
         
@@ -174,11 +182,12 @@ async def register(request: RegisterRequest, db: Session = Depends(get_db)):
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
 
-        try:
-            rabbitmq_producer.publish("email.notifications", message, durable=True)
+        # Publish email notification (non-blocking, won't fail registration)
+        published = publish_message_safe("email.notifications", message, retry=True)
+        if published:
             logger.info(f"Published verification email message for user {nuevo_usuario.id}, requestId: {request_id}")
-        except Exception as e:
-            logger.error(f"Failed to publish to RabbitMQ (email.notifications): {str(e)}")
+        else:
+            logger.warning(f"Failed to publish verification email for user {nuevo_usuario.id}, requestId: {request_id}")
             # Don't fail the registration if RabbitMQ is down; registration still succeeds
         
         # 9. Commit transaction
@@ -362,6 +371,20 @@ async def resend_code(request: ResendCodeRequest, db: Session = Depends(get_db))
         # 5. Generate new verification code
         verification_code = security_utils.generate_verification_code()
         code_hash = security_utils.hash_verification_code(verification_code)
+        
+        # Log verification code in development mode for testing
+        # Always log for now to help with debugging - use ERROR level to ensure it shows
+        import sys
+        msg = f"========================================\n[DEV MODE] Resent verification code for {request.email}: {verification_code}\n[DEV MODE] User can verify email at: POST /api/auth/verify-email with code: {verification_code}\n========================================"
+        print(msg, flush=True)
+        sys.stdout.flush()
+        sys.stderr.write(msg + "\n")
+        sys.stderr.flush()
+        logger.error(f"[DEV MODE] Resent verification code for {request.email}: {verification_code}")
+        logger.error(f"[DEV MODE] User can verify email at: POST /api/auth/verify-email with code: {verification_code}")
+        logger.info(f"[DEV MODE] Resent verification code for {request.email}: {verification_code}")
+        logger.info(f"[DEV MODE] User can verify email at: POST /api/auth/verify-email with code: {verification_code}")
+        
         expires_at = datetime.now(timezone.utc) + timedelta(minutes=settings.VERIFICATION_CODE_EXPIRE_MINUTES)
         
         # 6. Find existing unused code or create new one
@@ -411,11 +434,12 @@ async def resend_code(request: ResendCodeRequest, db: Session = Depends(get_db))
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
 
-        try:
-            rabbitmq_producer.publish("email.notifications", message, durable=True)
+        # Publish email notification (non-blocking)
+        published = publish_message_safe("email.notifications", message, retry=True)
+        if published:
             logger.info(f"Published resend verification email for user {usuario.id}, requestId: {request_id}")
-        except Exception as e:
-            logger.error(f"Failed to publish to RabbitMQ (email.notifications): {str(e)}")
+        else:
+            logger.warning(f"Failed to publish resend verification email for user {usuario.id}, requestId: {request_id}")
             # Don't fail the resend if RabbitMQ is down
         
         db.commit()
@@ -646,3 +670,68 @@ def require_admin(current_user: UsuarioPublicResponse = Depends(get_current_user
 @router.get("/me", response_model=UsuarioPublicResponse)
 async def get_me(current_user: UsuarioPublicResponse = Depends(get_current_user)):
     return current_user
+
+
+@router.get("/dev/verification-code/{email}", status_code=status.HTTP_200_OK)
+async def get_verification_code_dev(email: str, db: Session = Depends(get_db)):
+    """
+    DEVELOPMENT ONLY: Get the latest verification code for an email
+    This endpoint is only available when DEBUG=True
+    WARNING: This should NEVER be enabled in production!
+    """
+    if not settings.DEBUG:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={"status": "error", "message": "This endpoint is only available in development mode."}
+        )
+    
+    try:
+        # Find usuario by email (case-insensitive)
+        usuario = db.query(Usuario).filter(func.lower(Usuario.email) == func.lower(email)).first()
+        if not usuario:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={"status": "error", "message": "Usuario no encontrado."}
+            )
+        
+        # Find the most recent verification code (even if expired, for dev purposes)
+        verification_code_record = db.query(VerificationCode).filter(
+            VerificationCode.usuario_id == usuario.id
+        ).order_by(VerificationCode.created_at.desc()).first()
+        
+        if not verification_code_record:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={"status": "error", "message": "No se encontró código de verificación para este usuario."}
+            )
+        
+        # Check if code is still valid
+        is_expired = verification_code_record.expires_at < datetime.now(timezone.utc)
+        is_used = verification_code_record.is_used
+        
+        # Note: We cannot retrieve the actual code from the hash (it's one-way)
+        # But we can provide information about the code status
+        return {
+            "status": "success",
+            "message": "⚠️ IMPORTANTE: El código está hasheado en la BD y no se puede recuperar.",
+            "info": {
+                "email": email,
+                "usuario_id": usuario.id,
+                "code_id": verification_code_record.id,
+                "expires_at": verification_code_record.expires_at.isoformat(),
+                "is_expired": is_expired,
+                "is_used": is_used,
+                "attempts": verification_code_record.attempts,
+                "sent_count": verification_code_record.sent_count,
+                "created_at": verification_code_record.created_at.isoformat() if verification_code_record.created_at else None
+            },
+            "note": "Revisa los logs del servidor cuando se generó el código. En modo DEBUG, el código se imprime en los logs."
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting verification code for dev: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={"status": "error", "message": "Error interno del servidor."}
+        )

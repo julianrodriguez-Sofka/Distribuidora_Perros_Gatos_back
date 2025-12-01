@@ -13,8 +13,16 @@ import base64
 import json
 import os
 from app.config import settings
-from app.utils.rabbitmq import rabbitmq_producer
+from app.utils.rabbitmq import publish_message_safe
+from app.utils.constants import (
+    MIN_PRODUCT_NAME_LENGTH,
+    MIN_PRODUCT_DESCRIPTION_LENGTH,
+    MIN_PRODUCT_PRICE,
+    MIN_PRODUCT_WEIGHT_GRAMS,
+    MAX_PAGE_SIZE
+)
 from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
 import time
 import uuid
 
@@ -89,26 +97,26 @@ async def create_product(
     if any(f is None for f in required_fields):
         return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST, content={"status": "error", "message": "Por favor, completa todos los campos obligatorios."})
 
-    # Field-specific validations
-    if not isinstance(nombre, str) or len(nombre.strip()) < 2:
-        return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST, content={"status": "error", "message": "El nombre debe tener al menos 2 caracteres."})
+    # Field-specific validations using constants
+    if not isinstance(nombre, str) or len(nombre.strip()) < MIN_PRODUCT_NAME_LENGTH:
+        return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST, content={"status": "error", "message": f"El nombre debe tener al menos {MIN_PRODUCT_NAME_LENGTH} caracteres."})
 
-    if not isinstance(descripcion, str) or len(descripcion.strip()) < 10:
-        return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST, content={"status": "error", "message": "La descripción debe tener al menos 10 caracteres."})
+    if not isinstance(descripcion, str) or len(descripcion.strip()) < MIN_PRODUCT_DESCRIPTION_LENGTH:
+        return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST, content={"status": "error", "message": f"La descripción debe tener al menos {MIN_PRODUCT_DESCRIPTION_LENGTH} caracteres."})
 
     try:
         precio = float(precio)
-        if precio <= 0:
+        if precio < MIN_PRODUCT_PRICE:
             raise ValueError()
     except Exception:
-        return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST, content={"status": "error", "message": "El precio debe ser un número mayor a 0."})
+        return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST, content={"status": "error", "message": f"El precio debe ser un número mayor a {MIN_PRODUCT_PRICE}."})
 
     try:
         peso_gramos = int(peso_gramos)
-        if peso_gramos <= 0:
+        if peso_gramos < MIN_PRODUCT_WEIGHT_GRAMS:
             raise ValueError()
     except Exception:
-        return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST, content={"status": "error", "message": "El peso debe ser un entero mayor a 0 (gramos)."})
+        return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST, content={"status": "error", "message": f"El peso debe ser un entero mayor a {MIN_PRODUCT_WEIGHT_GRAMS} (gramos)."})
 
     imagen_b64 = None
     imagen_filename = None
@@ -179,27 +187,23 @@ async def create_product(
         message.update({"imagen_filename": imagen_filename, "imagen_b64": imagen_b64})
 
     # Publish message to RabbitMQ
+    # AC5: Prevent duplicate product names (case-insensitive) at Producer level
     try:
-        # AC5: Prevent duplicate product names (case-insensitive) at Producer level
-        try:
-            existing = db.execute(text("SELECT id FROM Productos WHERE LOWER(nombre) = :name"), {"name": nombre.strip().lower()}).first()
-        except Exception as err:
-            logger.exception("Error checking existing product name in DB: %s", err)
-            return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"status": "error", "message": "Error interno al verificar duplicados."})
+        existing = db.execute(text("SELECT id FROM Productos WHERE LOWER(nombre) = :name"), {"name": nombre.strip().lower()}).first()
+    except SQLAlchemyError as err:
+        logger.exception("Error checking existing product name in DB: %s", err)
+        db.rollback()
+        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"status": "error", "message": "Error interno al verificar duplicados."})
 
-        if existing:
-            return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST, content={"status": "error", "message": "Ya existe un producto con ese nombre."})
+    if existing:
+        return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST, content={"status": "error", "message": "Ya existe un producto con ese nombre."})
 
-        rabbitmq_producer.connect()
-        rabbitmq_producer.publish(queue_name="productos.crear", message=message)
-    except Exception as e:
-        logger.exception("Error publishing producto.crear message")
-        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"status": "error", "message": "Error interno al procesar el producto."})
-    finally:
-        try:
-            rabbitmq_producer.close()
-        except Exception:
-            pass
+    # Publish to RabbitMQ (connection is persistent, no need to close)
+    published = rabbitmq_producer.publish(queue_name="productos.crear", message=message, retry=True)
+    if not published:
+        logger.error(f"Failed to publish message to productos.crear after retries. Message: {message}")
+        # Don't fail the request, but log the error
+        # The worker can retry from the queue if needed
 
     return JSONResponse(status_code=status.HTTP_202_ACCEPTED, content={"status": "success", "message": "Producto creado exitosamente"})
 
@@ -258,27 +262,36 @@ async def list_products(
     subcats = {}
     try:
         if cat_ids:
-            # Include created_at/updated_at aliased for Pydantic schemas
-            qcat = text(f"SELECT id, nombre, fecha_creacion AS created_at, fecha_actualizacion AS updated_at FROM Categorias WHERE id IN ({', '.join([str(int(x)) for x in cat_ids])})")
-            for c in db.execute(qcat).fetchall():
+            # Use parameterized query to prevent SQL injection
+            cat_ids_list = [int(x) for x in cat_ids]
+            placeholders = ','.join([f':cat_id_{i}' for i in range(len(cat_ids_list))])
+            params = {f'cat_id_{i}': cat_id for i, cat_id in enumerate(cat_ids_list)}
+            qcat = text(f"SELECT id, nombre, fecha_creacion AS created_at, fecha_actualizacion AS updated_at FROM Categorias WHERE id IN ({placeholders})")
+            for c in db.execute(qcat, params).fetchall():
                 cats[c.id] = {"id": c.id, "nombre": c.nombre, "created_at": c.created_at, "updated_at": c.updated_at}
         if subcat_ids:
-            # Subcategorias has only fecha_creacion in schema; provide created_at and updated_at (fallback to fecha_creacion)
-            qsub = text(f"SELECT id, categoria_id, nombre, fecha_creacion AS created_at FROM Subcategorias WHERE id IN ({', '.join([str(int(x)) for x in subcat_ids])})")
-            for s in db.execute(qsub).fetchall():
+            # Use parameterized query to prevent SQL injection
+            subcat_ids_list = [int(x) for x in subcat_ids]
+            placeholders = ','.join([f':subcat_id_{i}' for i in range(len(subcat_ids_list))])
+            params = {f'subcat_id_{i}': subcat_id for i, subcat_id in enumerate(subcat_ids_list)}
+            qsub = text(f"SELECT id, categoria_id, nombre, fecha_creacion AS created_at FROM Subcategorias WHERE id IN ({placeholders})")
+            for s in db.execute(qsub, params).fetchall():
                 subcats[s.id] = {"id": s.id, "categoria_id": s.categoria_id, "nombre": s.nombre, "created_at": s.created_at, "updated_at": s.created_at}
-    except Exception:
+    except SQLAlchemyError:
         # Non-fatal: proceed without names
         logger.exception("Error fetching category/subcategory names")
 
-    # Fetch images for products in batch
+    # Fetch images for products in batch (using parameterized query)
     images_map = {}
     try:
         if prod_ids:
-            qimg = text(f"SELECT producto_id, ruta_imagen FROM ProductoImagenes WHERE producto_id IN ({', '.join([str(int(x)) for x in prod_ids])}) ORDER BY orden ASC")
-            for img in db.execute(qimg).fetchall():
+            prod_ids_list = [int(x) for x in prod_ids]
+            placeholders = ','.join([f':prod_id_{i}' for i in range(len(prod_ids_list))])
+            params = {f'prod_id_{i}': prod_id for i, prod_id in enumerate(prod_ids_list)}
+            qimg = text(f"SELECT producto_id, ruta_imagen FROM ProductoImagenes WHERE producto_id IN ({placeholders}) ORDER BY orden ASC")
+            for img in db.execute(qimg, params).fetchall():
                 images_map.setdefault(img.producto_id, []).append(img.ruta_imagen)
-    except Exception:
+    except SQLAlchemyError:
         logger.exception("Error fetching product images")
 
     for r in rows:
@@ -479,7 +492,7 @@ async def update_product(
         res = db.execute(upd_sql, params)
         row = res.fetchone()
         db.commit()
-    except Exception as e:
+    except SQLAlchemyError as e:
         logger.exception("Error updating product: %s", e)
         db.rollback()
         return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"status": "error", "message": "Error interno al actualizar el producto."})
@@ -529,17 +542,10 @@ async def update_product(
         producto['imagenes'] = []
 
     # Publish productos.actualizar message
-    try:
-        message = {"producto_id": producto_id, "producto": producto}
-        rabbitmq_producer.connect()
-        rabbitmq_producer.publish(queue_name="productos.actualizar", message=message)
-    except Exception as e:
-        logger.exception("Error publishing productos.actualizar message: %s", e)
-    finally:
-        try:
-            rabbitmq_producer.close()
-        except Exception:
-            pass
+    message = {"producto_id": producto_id, "producto": producto}
+    published = publish_message_safe("productos.actualizar", message, retry=True)
+    if not published:
+        logger.warning(f"Failed to publish productos.actualizar message for product {producto_id}")
 
     return producto
  
@@ -583,18 +589,11 @@ async def update_product_stock(producto_id: int, request_obj: Request, db: Sessi
         return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content={"status": "error", "message": "Producto no encontrado."})
 
     # Publish message to RabbitMQ in exact format required
-    try:
-        msg = {"requestId": str(uuid.uuid4()), "productoId": int(producto_id), "cantidad": int(cantidad_val)}
-        rabbitmq_producer.connect()
-        rabbitmq_producer.publish(queue_name="inventario.reabastecer", message=msg)
-    except Exception as e:
-        logger.exception("Error publishing inventario.reabastecer message: %s", e)
+    msg = {"requestId": str(uuid.uuid4()), "productoId": int(producto_id), "cantidad": int(cantidad_val)}
+    published = publish_message_safe("inventario.reabastecer", msg, retry=True)
+    if not published:
+        logger.error(f"Failed to publish inventario.reabastecer message for product {producto_id}")
         return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"status": "error", "message": "Error interno al procesar la solicitud."})
-    finally:
-        try:
-            rabbitmq_producer.close()
-        except Exception:
-            pass
 
     return JSONResponse(status_code=status.HTTP_200_OK, content={"status": "success", "message": "Existencias actualizadas exitosamente"})
 
@@ -652,33 +651,27 @@ async def upload_product_image(
         logger.exception("Error saving uploaded file: %s", e)
         return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"status": "error", "message": "Error interno al guardar la imagen."})
 
-    # 4. Create ProductoImagen record
+    # 4. Create ProductoImagen record (within transaction)
     try:
         db.execute(text("INSERT INTO ProductoImagenes (producto_id, ruta_imagen, es_principal, orden) VALUES (:producto_id, :ruta_imagen, 1, 0)"), {"producto_id": producto_id, "ruta_imagen": file_path})
         db.commit()
-    except Exception as e:
+    except SQLAlchemyError as e:
         logger.exception("Error inserting ProductoImagenes record: %s", e)
+        db.rollback()
         # attempt to remove saved file on failure
         try:
             if os.path.exists(file_path):
                 os.remove(file_path)
-        except Exception:
-            pass
+        except Exception as cleanup_error:
+            logger.error(f"Error removing file after DB failure: {cleanup_error}")
         return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"status": "error", "message": "Error interno al guardar la imagen en la base de datos."})
 
-    # 5. Publish productos.imagen.crear queue message
-    try:
-        message = {"producto_id": producto_id, "ruta_imagen": file_path}
-        rabbitmq_producer.connect()
-        rabbitmq_producer.publish(queue_name="productos.imagen.crear", message=message)
-    except Exception as e:
-        logger.exception("Error publishing productos.imagen.crear message: %s", e)
+    # 5. Publish productos.imagen.crear queue message (non-blocking)
+    message = {"producto_id": producto_id, "ruta_imagen": file_path}
+    published = publish_message_safe("productos.imagen.crear", message, retry=True)
+    if not published:
+        logger.warning(f"Failed to publish productos.imagen.crear message for product {producto_id}, image {file_path}")
         # Not critical for upload success; return warning but 201
-    finally:
-        try:
-            rabbitmq_producer.close()
-        except Exception:
-            pass
 
     return JSONResponse(status_code=status.HTTP_201_CREATED, content={"status": "success", "message": "Imagen subida correctamente", "ruta": file_path})
 
@@ -907,18 +900,11 @@ async def update_product_image(
         except Exception:
             logger.exception("Failed to remove old image file: %s", old_path)
 
-    # 7. Publish productos.imagen.actualizar message
-    try:
-        message = {"producto_id": producto_id, "imagen_id": imagen_id, "ruta_imagen": row.ruta_imagen, "es_principal": bool(row.es_principal), "orden": int(row.orden)}
-        rabbitmq_producer.connect()
-        rabbitmq_producer.publish(queue_name="productos.imagen.actualizar", message=message)
-    except Exception as e:
-        logger.exception("Error publishing productos.imagen.actualizar message: %s", e)
-    finally:
-        try:
-            rabbitmq_producer.close()
-        except Exception:
-            pass
+    # 7. Publish productos.imagen.actualizar message (non-blocking)
+    message = {"producto_id": producto_id, "imagen_id": imagen_id, "ruta_imagen": row.ruta_imagen, "es_principal": bool(row.es_principal), "orden": int(row.orden)}
+    published = publish_message_safe("productos.imagen.actualizar", message, retry=True)
+    if not published:
+        logger.warning(f"Failed to publish productos.imagen.actualizar message for product {producto_id}, image {imagen_id}")
 
     result = {
         "id": int(row.id),
@@ -993,18 +979,11 @@ async def delete_product_image(
         except Exception:
             logger.exception("Failed to remove image file: %s", ruta)
 
-    # 5. Publish productos.imagen.eliminar message
-    try:
-        message = {"producto_id": int(producto_id), "imagen_id": int(imagen_id), "ruta_imagen": ruta}
-        rabbitmq_producer.connect()
-        rabbitmq_producer.publish(queue_name="productos.imagen.eliminar", message=message)
-    except Exception as e:
-        logger.exception("Error publishing productos.imagen.eliminar message: %s", e)
-    finally:
-        try:
-            rabbitmq_producer.close()
-        except Exception:
-            pass
+    # 5. Publish productos.imagen.eliminar message (non-blocking)
+    message = {"producto_id": int(producto_id), "imagen_id": int(imagen_id), "ruta_imagen": ruta}
+    published = publish_message_safe("productos.imagen.eliminar", message, retry=True)
+    if not published:
+        logger.warning(f"Failed to publish productos.imagen.eliminar message for product {producto_id}, image {imagen_id}")
 
     return JSONResponse(status_code=status.HTTP_200_OK, content={"status": "success", "message": "Imagen eliminada correctamente"})
 
@@ -1038,30 +1017,19 @@ async def delete_product(producto_id: int, db: Session = Depends(get_db)):
     if hist:
         return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST, content={"status": "error", "message": "No se puede eliminar el producto porque tiene movimientos registrados."})
 
-    # 3. Publish productos.eliminar message to RabbitMQ (Producer does not delete DB)
-    try:
-        message = {"requestId": str(uuid.uuid4()), "productoId": int(producto_id)}
-        rabbitmq_producer.connect()
-        rabbitmq_producer.publish(queue_name="productos.eliminar", message=message)
-    except Exception as e:
-        logger.exception("Error publishing productos.eliminar message: %s", e)
+    # 3. Publish productos.eliminar message to RabbitMQ (non-blocking)
+    message = {"requestId": str(uuid.uuid4()), "productoId": int(producto_id)}
+    published = publish_message_safe("productos.eliminar", message, retry=True)
+    if not published:
+        logger.warning(f"Failed to publish productos.eliminar message for product {producto_id}")
         # Not fatal for client response
-    finally:
-        try:
-            rabbitmq_producer.close()
-        except Exception:
-            pass
 
-    # 4. Also mark product as inactive in DB (soft delete)
+    # 4. Also mark product as inactive in DB (soft delete) - within transaction
     try:
         upd = text("UPDATE Productos SET activo = 0, fecha_actualizacion = GETUTCDATE() WHERE id = :id")
         res = db.execute(upd, {"id": producto_id})
-        try:
-            affected = res.rowcount
-        except Exception:
-            affected = None
         db.commit()
-    except Exception as e:
+    except SQLAlchemyError as e:
         logger.exception("Error marking product inactive: %s", e)
         db.rollback()
         # still return success to client but log
