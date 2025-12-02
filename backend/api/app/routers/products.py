@@ -286,7 +286,29 @@ async def list_products(
     except Exception:
         logger.exception("Error fetching product images")
 
+    # Fetch ratings/calificaciones for products in batch
+    ratings_map = {}
+    try:
+        if prod_ids:
+            qrating = text(f"""
+                SELECT 
+                    producto_id,
+                    COUNT(*) as total_calificaciones,
+                    AVG(CAST(calificacion AS FLOAT)) as promedio_calificacion
+                FROM ProductoCalificaciones
+                WHERE producto_id IN ({', '.join([str(int(x)) for x in prod_ids])})
+                GROUP BY producto_id
+            """)
+            for rating in db.execute(qrating).fetchall():
+                ratings_map[rating.producto_id] = {
+                    "promedio_calificacion": round(rating.promedio_calificacion, 1) if rating.promedio_calificacion else 0.0,
+                    "total_calificaciones": rating.total_calificaciones
+                }
+    except Exception:
+        logger.exception("Error fetching product ratings")
+
     for r in rows:
+        rating_info = ratings_map.get(r.id, {"promedio_calificacion": 0.0, "total_calificaciones": 0})
         prod = {
             "id": int(r.id),
             "nombre": r.nombre,
@@ -300,7 +322,9 @@ async def list_products(
             "fecha_creacion": r.fecha_creacion,
             "categoria": cats.get(r.categoria_id),
             "subcategoria": subcats.get(r.subcategoria_id),
-            "imagenes": images_map.get(r.id, [])
+            "imagenes": images_map.get(r.id, []),
+            "promedio_calificacion": rating_info["promedio_calificacion"],
+            "total_calificaciones": rating_info["total_calificaciones"]
         }
         products.append(prod)
 
@@ -368,6 +392,27 @@ async def get_product(producto_id: int, include_inactive: bool = Query(False), d
     except Exception:
         logger.exception("Error fetching images for product %s", producto_id)
         producto['imagenes'] = []
+
+    # Fetch ratings/calificaciones
+    try:
+        qrating = text("""
+            SELECT 
+                COUNT(*) as total_calificaciones,
+                AVG(CAST(calificacion AS FLOAT)) as promedio_calificacion
+            FROM ProductoCalificaciones
+            WHERE producto_id = :id
+        """)
+        rating = db.execute(qrating, {"id": producto_id}).first()
+        if rating and rating.total_calificaciones > 0:
+            producto['promedio_calificacion'] = round(rating.promedio_calificacion, 1) if rating.promedio_calificacion else 0.0
+            producto['total_calificaciones'] = rating.total_calificaciones
+        else:
+            producto['promedio_calificacion'] = 0.0
+            producto['total_calificaciones'] = 0
+    except Exception:
+        logger.exception("Error fetching ratings for product %s", producto_id)
+        producto['promedio_calificacion'] = 0.0
+        producto['total_calificaciones'] = 0
 
     return producto
 

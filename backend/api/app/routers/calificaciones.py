@@ -219,3 +219,70 @@ async def obtener_promedio_producto(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Error al obtener promedio de calificaciones"
         )
+
+
+@router.get("/todas", response_model=List[CalificacionResponse])
+async def obtener_todas_calificaciones(
+    producto_id: Optional[int] = None,
+    calificacion: Optional[int] = None,
+    limit: int = 100,
+    skip: int = 0,
+    db: Session = Depends(get_db)
+):
+    """
+    Obtener todas las calificaciones de todos los productos (para admin)
+    - Filtros opcionales por producto_id y calificación
+    - Paginación
+    """
+    try:
+        # Construir query con filtros dinámicos
+        where_clauses = []
+        params = {"limit": limit, "skip": skip}
+        
+        if producto_id:
+            where_clauses.append("c.producto_id = :producto_id")
+            params["producto_id"] = producto_id
+        
+        if calificacion:
+            where_clauses.append("c.calificacion = :calificacion")
+            params["calificacion"] = calificacion
+        
+        where_sql = " AND ".join(where_clauses) if where_clauses else "1=1"
+        
+        query = text(f"""
+            SELECT 
+                c.id,
+                c.producto_id,
+                c.usuario_id,
+                c.calificacion,
+                c.comentario,
+                c.fecha_creacion,
+                p.nombre as producto_nombre
+            FROM ProductoCalificaciones c
+            INNER JOIN Productos p ON c.producto_id = p.id
+            WHERE {where_sql}
+            ORDER BY c.fecha_creacion DESC
+            OFFSET :skip ROWS FETCH NEXT :limit ROWS ONLY
+        """)
+        
+        rows = db.execute(query, params).fetchall()
+        
+        calificaciones = []
+        for row in rows:
+            calificaciones.append(CalificacionResponse(
+                id=row.id,
+                producto_id=row.producto_id,
+                usuario_id=row.usuario_id,
+                calificacion=row.calificacion,
+                comentario=row.comentario,
+                fecha_creacion=row.fecha_creacion
+            ))
+        
+        return calificaciones
+        
+    except Exception as e:
+        logger.exception(f"Error al obtener todas las calificaciones: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error al obtener calificaciones"
+        )

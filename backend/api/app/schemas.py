@@ -184,6 +184,8 @@ class ProductoResponse(BaseModel):
     subcategoria: Optional[SubcategoriaResponse] = None
     imagenes: List[str] = []
     fecha_creacion: datetime
+    promedio_calificacion: float = 0.0
+    total_calificaciones: int = 0
     
     class Config:
         from_attributes = True
