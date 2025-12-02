@@ -74,16 +74,28 @@ async def browse_products(
     try:
         if cat_ids:
             qcat = text(
-                f"SELECT id, nombre FROM Categorias WHERE id IN ({', '.join([str(int(x)) for x in cat_ids])})"
+                f"SELECT id, nombre, fecha_creacion, fecha_actualizacion FROM Categorias WHERE id IN ({', '.join([str(int(x)) for x in cat_ids])})"
             )
             for c in db.execute(qcat).fetchall():
-                cats[c.id] = {"id": c.id, "nombre": c.nombre}
+                cats[c.id] = {
+                    "id": c.id,
+                    "nombre": c.nombre,
+                    "created_at": c.fecha_creacion,
+                    "updated_at": c.fecha_actualizacion,
+                    "subcategorias": []
+                }
         if subcat_ids:
             qsub = text(
-                f"SELECT id, nombre FROM Subcategorias WHERE id IN ({', '.join([str(int(x)) for x in subcat_ids])})"
+                f"SELECT id, nombre, categoria_id, fecha_creacion FROM Subcategorias WHERE id IN ({', '.join([str(int(x)) for x in subcat_ids])})"
             )
             for s in db.execute(qsub).fetchall():
-                subcats[s.id] = {"id": s.id, "nombre": s.nombre}
+                subcats[s.id] = {
+                    "id": s.id,
+                    "nombre": s.nombre,
+                    "categoria_id": s.categoria_id,
+                    "created_at": s.fecha_creacion,
+                    "updated_at": None  # Subcategorias no tiene fecha_actualizacion
+                }
     except Exception:
         logger.exception("Error fetching category/subcategory names")
 

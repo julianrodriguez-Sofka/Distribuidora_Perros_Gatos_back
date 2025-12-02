@@ -100,13 +100,15 @@ except Exception:
 # Mount static files so requests to /app/uploads/... are served from the uploads folder
 app.mount("/app/uploads", StaticFiles(directory=str(UPLOADS_DIR)), name="uploads")
 
-# Middleware CORS
+# Middleware CORS - Debe ir ANTES de los routers
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.CORS_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
     allow_headers=["*"],
+    expose_headers=["*"],
+    max_age=3600,
 )
 
 # Middleware para hosts de confianza

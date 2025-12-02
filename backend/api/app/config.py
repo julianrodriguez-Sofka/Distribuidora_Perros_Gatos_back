@@ -45,9 +45,15 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 15
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
     
-    # CORS
-    CORS_ORIGINS: List[str] = ["http://localhost:3000", "http://localhost:8080", "http://localhost:5173"]
-    ALLOWED_HOSTS: List[str] = ["localhost", "127.0.0.1"]
+    # CORS - Permitir múltiples orígenes para desarrollo
+    CORS_ORIGINS: List[str] = [
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:8080",
+        "http://localhost:5173",
+        "http://localhost:8000"
+    ]
+    ALLOWED_HOSTS: List[str] = ["*"]  # Permitir todos en desarrollo
     
     # Email Configuration
     SMTP_SERVER: str = "smtp.gmail.com"
