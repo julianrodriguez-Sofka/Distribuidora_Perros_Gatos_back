@@ -111,7 +111,29 @@ async def browse_products(
     except Exception:
         logger.exception("Error fetching product images")
 
+    # ratings/calificaciones map
+    ratings_map = {}
+    try:
+        if prod_ids:
+            qrating = text("""
+                SELECT 
+                    producto_id,
+                    COUNT(*) as total_calificaciones,
+                    AVG(CAST(calificacion AS FLOAT)) as promedio_calificacion
+                FROM ProductoCalificaciones
+                WHERE producto_id IN ({})
+                GROUP BY producto_id
+            """.format(', '.join([str(int(x)) for x in prod_ids])))
+            for rating in db.execute(qrating).fetchall():
+                ratings_map[rating.producto_id] = {
+                    "promedio_calificacion": round(rating.promedio_calificacion, 1) if rating.promedio_calificacion else 0.0,
+                    "total_calificaciones": rating.total_calificaciones
+                }
+    except Exception:
+        logger.exception("Error fetching product ratings")
+
     for r in rows:
+        rating_info = ratings_map.get(r.id, {"promedio_calificacion": 0.0, "total_calificaciones": 0})
         products.append(
             {
                 "id": int(r.id),
@@ -127,6 +149,8 @@ async def browse_products(
                 "categoria": cats.get(r.categoria_id),
                 "subcategoria": subcats.get(r.subcategoria_id),
                 "imagenes": images_map.get(r.id, []),
+                "promedio_calificacion": rating_info["promedio_calificacion"],
+                "total_calificaciones": rating_info["total_calificaciones"],
             }
         )
 

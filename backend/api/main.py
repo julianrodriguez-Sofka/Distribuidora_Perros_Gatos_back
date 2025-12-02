@@ -25,6 +25,7 @@ from app.routers import (
     admin_users_router,
     home_products_router
 )
+from app.routers.calificaciones import router as calificaciones_router
 
 
 @asynccontextmanager
@@ -137,6 +138,7 @@ app.include_router(orders_router, tags=["orders"])
 app.include_router(orders_public_router, tags=["pedidos-public"])
 app.include_router(admin_users_router, tags=["admin-users"])
 app.include_router(home_products_router, tags=["home-products"])
+app.include_router(calificaciones_router, tags=["calificaciones"])
 
 # Public routers (frontend)
 from app.routers.carousel import public_router as carousel_public_router

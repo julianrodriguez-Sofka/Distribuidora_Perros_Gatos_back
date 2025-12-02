@@ -114,5 +114,23 @@ class SecurityUtils:
         """
         expected_hash = SecurityUtils.hash_verification_code(code)
         return hmac.compare_digest(expected_hash, code_hash)
+    
+    @staticmethod
+    def get_current_user_optional(authorization: Optional[str] = None) -> Optional[dict]:
+        """
+        Get current user from JWT token if present, return None if not authenticated
+        Useful for endpoints that work both authenticated and anonymous
+        """
+        if not authorization:
+            return None
+        
+        try:
+            # Extract token from "Bearer <token>"
+            token = authorization.split(" ")[-1] if " " in authorization else authorization
+            payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+            return payload
+        except Exception:
+            # Silently return None if token is invalid
+            return None
 
 security_utils = SecurityUtils()

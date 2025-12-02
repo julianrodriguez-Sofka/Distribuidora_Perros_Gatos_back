@@ -400,3 +400,42 @@ class PedidosListResponse(BaseModel):
     data: List[PedidoResponse] = []
     meta: MetaPage
 
+
+# --- Rating/Calificaciones Schemas ---
+class CalificacionCreateRequest(BaseModel):
+    """Request para crear una calificación de producto"""
+    calificacion: int = Field(..., ge=1, le=5, description="Calificación de 1 a 5 estrellas")
+    comentario: Optional[str] = Field(None, max_length=500, description="Comentario opcional")
+
+
+class CalificacionResponse(BaseModel):
+    """Response de una calificación individual"""
+    id: int
+    producto_id: int
+    usuario_id: Optional[int]
+    calificacion: int
+    comentario: Optional[str]
+    fecha_creacion: datetime
+    
+    class Config:
+        from_attributes = True
+
+
+class PromedioCalificacionResponse(BaseModel):
+    """Response con el promedio de calificaciones de un producto"""
+    producto_id: int
+    promedio_calificacion: float
+    total_calificaciones: int
+    estrellas_5: int = 0
+    estrellas_4: int = 0
+    estrellas_3: int = 0
+    estrellas_2: int = 0
+    estrellas_1: int = 0
+
+
+class CalificacionesListResponse(BaseModel):
+    """Response con lista de calificaciones de un producto"""
+    status: str = "success"
+    data: List[CalificacionResponse] = []
+    promedio: Optional[PromedioCalificacionResponse] = None
+
